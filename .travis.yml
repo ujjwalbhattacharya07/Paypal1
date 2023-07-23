@@ -1,0 +1,137 @@
+os: linux
+dist: bionic
+services:
+  - xvfb
+notifications:
+  slack: ventureum-team:DSE8wxmLTenq0Yz17BrYBWg9
+language: node_js
+node_js:
+  - 12
+
+stages:
+  - name: lint
+    if: type = pull_request
+  - name: test1
+    if: type = pull_request
+  - name: test2
+    if: type = pull_request
+  - name: test3
+    if: type = pull_request
+  - name: build and deploy
+    if: type = push AND (branch = master OR branch = release)
+
+jobs:
+  include:
+    - stage: lint
+      script:
+        - npm run eslint
+        - npm run flow
+
+    - stage: test1
+      script:
+        - echo fs.inotify.max_user_watches=524288 | sudo tee -a /etc/sysctl.conf && sudo sysctl -p
+        - npm run test:e2e -t userSetting recipients receipt landing accountManagement
+      env:
+        - REACT_APP_INFURA_API_KEY=$REACT_APP_INFURA_API_KEY
+        - REACT_APP_CHAINSFER_API_ENDPOINT=https://test.api.chainsfr.com
+        - REACT_APP_E2E_TEST_MOCK_USER=true
+        - REACT_APP_E2E_TEST_TEST_MAIL_NAMESPACE=vnpkn
+        - REACT_APP_E2E_TEST_MAIL_TAG_SUFFIX=CI
+        - E2E_TEST_START_SERVER=true
+        - E2E_TEST_URL=http://localhost:3001
+        - E2E_TEST_METAMASK_PRIVATE_KEY=$E2E_TEST_METAMASK_PRIVATE_KEY
+        - E2E_TEST_TEST_MAIL_API_KEY=$E2E_TEST_TEST_MAIL_API_KEY
+        - REACT_APP_E2E_TEST_MOCK_USER_GOOGLE_ID=$REACT_APP_E2E_TEST_MOCK_USER_GOOGLE_ID
+  
+    - stage: test2
+      script:
+        - echo fs.inotify.max_user_watches=524288 | sudo tee -a /etc/sysctl.conf && sudo sysctl -p
+        - npm run test:e2e -t directTransfer
+      env:
+        - REACT_APP_INFURA_API_KEY=$REACT_APP_INFURA_API_KEY
+        - REACT_APP_CHAINSFER_API_ENDPOINT=https://test.api.chainsfr.com
+        - REACT_APP_E2E_TEST_MOCK_USER=true
+        - REACT_APP_E2E_TEST_TEST_MAIL_NAMESPACE=vnpkn
+        - REACT_APP_E2E_TEST_MAIL_TAG_SUFFIX=CI
+        - E2E_TEST_START_SERVER=true
+        - E2E_TEST_URL=http://localhost:3001
+        - E2E_TEST_METAMASK_PRIVATE_KEY=$E2E_TEST_METAMASK_PRIVATE_KEY
+        - E2E_TEST_TEST_MAIL_API_KEY=$E2E_TEST_TEST_MAIL_API_KEY
+        - REACT_APP_E2E_TEST_MOCK_USER_GOOGLE_ID=$REACT_APP_E2E_TEST_MOCK_USER_GOOGLE_ID
+  
+    - stage: test3
+      script:
+        - echo fs.inotify.max_user_watches=524288 | sudo tee -a /etc/sysctl.conf && sudo sysctl -p
+        - npm run test:e2e -t emailTransfer cancelTransfer receiveTransfer
+      env:
+        - REACT_APP_INFURA_API_KEY=$REACT_APP_INFURA_API_KEY
+        - REACT_APP_CHAINSFER_API_ENDPOINT=https://test.api.chainsfr.com
+        - REACT_APP_E2E_TEST_MOCK_USER=true
+        - REACT_APP_E2E_TEST_TEST_MAIL_NAMESPACE=vnpkn
+        - REACT_APP_E2E_TEST_MAIL_TAG_SUFFIX=CI
+        - E2E_TEST_START_SERVER=true
+        - E2E_TEST_URL=http://localhost:3001
+        - E2E_TEST_METAMASK_PRIVATE_KEY=$E2E_TEST_METAMASK_PRIVATE_KEY
+        - E2E_TEST_TEST_MAIL_API_KEY=$E2E_TEST_TEST_MAIL_API_KEY
+        - REACT_APP_E2E_TEST_MOCK_USER_GOOGLE_ID=$REACT_APP_E2E_TEST_MOCK_USER_GOOGLE_ID
+
+    - stage: build and deploy
+      before_install:
+        - chmod +x ./aws_config.sh
+        - ./aws_config.sh
+      install:
+        - npm ci
+        - pip install --user awscli
+        # setup sentry
+        - curl -sL https://sentry.io/get-cli/ | bash
+        - export SENTRY_RELEASE=$(sentry-cli releases propose-version)
+        - sentry-cli releases new -p $SENTRY_PROJECT $SENTRY_RELEASE
+        - sentry-cli releases set-commits --auto $SENTRY_RELEASE
+        - sentry-cli releases finalize $SENTRY_RELEASE
+      script:
+        - npm run build:test
+        - mv ./build ./build_test
+        - npm run build:staging
+        - mv ./build ./build_staging
+        - npm run build:prod
+        - mv ./build ./build_prod
+      deploy:
+        - provider: s3
+          cache_control: 'max-age=0,no-cache,no-store,must-revalidate'
+          access_key_id: $S3_ACCESS_KEY
+          secret_access_key: $S3_SECRET
+          bucket: test.chainsfr.com
+          skip_cleanup: true
+          local_dir: build_test
+          region: us-east-1
+          acl: public_read
+          on:
+            branch: master
+        - provider: s3
+          cache_control: 'max-age=0,no-cache,no-store,must-revalidate'
+          access_key_id: $S3_ACCESS_KEY
+          secret_access_key: $S3_SECRET
+          bucket: testnet.chainsfr.com
+          skip_cleanup: true
+          local_dir: build_staging
+          region: us-east-1
+          acl: public_read
+          on:
+            branch: release
+        - provider: s3
+          cache_control: 'max-age=0,no-cache,no-store,must-revalidate'
+          access_key_id: $S3_ACCESS_KEY
+          secret_access_key: $S3_SECRET
+          bucket: app.chainsfr.com
+          skip_cleanup: true
+          local_dir: build_prod
+          region: us-east-1
+          acl: public_read
+          on:
+            branch: release
+      after_deploy:
+        - aws configure set preview.cloudfront true
+        - test $TRAVIS_BRANCH = "master" && aws cloudfront create-invalidation --distribution-id $TEST_DISTRIBUTION_ID --paths "/*"
+        - test $TRAVIS_BRANCH = "release" && aws cloudfront create-invalidation --distribution-id $STAGING_DISTRIBUTION_ID --paths "/*"
+        - test $TRAVIS_BRANCH = "release" && aws cloudfront create-invalidation --distribution-id $PROD_DISTRIBUTION_ID --paths "/*"
+
